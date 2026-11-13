@@ -23,9 +23,11 @@
 
 package org.videolan.vlc.gui.video
 
+import android.graphics.Rect
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.util.VLCVideoLayout
 import org.videolan.vlc.R
 import kotlin.math.abs
@@ -39,10 +41,11 @@ import kotlin.math.ceil
  * and the subtitles are cut along with the picture.
  *
  * This delegate lays out the subtitles surface on its own: it always gets the biggest size that
- * fits in the screen while keeping the video surface aspect ratio (the "best fit" bounds).
- * The subtitles position and size are therefore the same in every scale mode.
+ * fits in the screen while keeping the media aspect ratio (the "best fit" bounds), so the subtitles
+ * are never cut nor distorted. This box is stuck to the bottom of the visible picture, so that the
+ * subtitles do not float in the middle of the screen when the video fills a portrait screen.
  */
-class VideoPlayerSubtitlesDelegate {
+class VideoPlayerSubtitlesDelegate(private val videoTrackProvider: () -> IMedia.VideoTrack?) {
 
     private var surfaceFrame: FrameLayout? = null
     private var videoSurface: View? = null
@@ -50,8 +53,28 @@ class VideoPlayerSubtitlesDelegate {
 
     private val updateRunnable = Runnable { update() }
 
-    private val layoutChangeListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+    private val layoutChangeListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> scheduleUpdate() }
+
+    /**
+     * libvlc gives its own layout params to the subtitles surface on every video layout change.
+     * Fix the subtitles bounds right away, in the same layout pass, so that a frame is never drawn
+     * (and the subtitles surface never resized) with the libvlc bounds: this would flicker.
+     */
+    private var correctingLayout = false
+    private val subtitlesLayoutChangeListener = View.OnLayoutChangeListener { view, left, top, right, bottom, _, _, _, _ ->
+        if (correctingLayout) return@OnLayoutChangeListener
+        computeBounds()?.let {
+            if (it.left != left || it.top != top || it.right != right || it.bottom != bottom) {
+                correctingLayout = true
+                view.layout(it.left, it.top, it.right, it.bottom)
+                correctingLayout = false
+            }
+        }
         // Layout params cannot be safely changed during a layout pass
+        scheduleUpdate()
+    }
+
+    private fun scheduleUpdate() {
         subtitlesSurface?.let {
             it.removeCallbacks(updateRunnable)
             it.post(updateRunnable)
@@ -73,7 +96,7 @@ class VideoPlayerSubtitlesDelegate {
         subtitlesSurface = subtitles
         frame.addOnLayoutChangeListener(layoutChangeListener)
         video.addOnLayoutChangeListener(layoutChangeListener)
-        subtitles.addOnLayoutChangeListener(layoutChangeListener)
+        subtitles.addOnLayoutChangeListener(subtitlesLayoutChangeListener)
         subtitles.post(updateRunnable)
     }
 
@@ -82,45 +105,83 @@ class VideoPlayerSubtitlesDelegate {
      */
     fun detach() {
         subtitlesSurface?.removeCallbacks(updateRunnable)
-        arrayOf(surfaceFrame, videoSurface, subtitlesSurface).forEach { it?.removeOnLayoutChangeListener(layoutChangeListener) }
+        surfaceFrame?.removeOnLayoutChangeListener(layoutChangeListener)
+        videoSurface?.removeOnLayoutChangeListener(layoutChangeListener)
+        subtitlesSurface?.removeOnLayoutChangeListener(subtitlesLayoutChangeListener)
         surfaceFrame = null
         videoSurface = null
         subtitlesSurface = null
     }
 
+    /**
+     * Make the subtitles surface layout params match [computeBounds]
+     */
     private fun update() {
-        val frame = surfaceFrame ?: return
         val video = videoSurface ?: return
         val subtitles = subtitlesSurface ?: return
         val videoLp = video.layoutParams ?: return
         val subtitlesLp = subtitles.layoutParams ?: return
+        if (videoLp.width <= 0 || videoLp.height <= 0) return
+        val bounds = computeBounds()
+        if (bounds == null) {
+            // Use the libvlc layout
+            if (subtitlesLp !== videoLp) subtitles.layoutParams = videoLp
+            return
+        }
+        // libvlc shares the video layout params instance with the subtitles surface: never modify it
+        if (subtitlesLp !== videoLp && subtitlesLp is FrameLayout.LayoutParams && subtitlesLp.width == bounds.width()
+                && subtitlesLp.height == bounds.height() && subtitlesLp.topMargin == bounds.top) return
+        subtitles.layoutParams = FrameLayout.LayoutParams(bounds.width(), bounds.height(), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = bounds.top }
+    }
+
+    /**
+     * Compute the subtitles surface bounds, in the surface frame coordinates
+     *
+     * @return the bounds, or null if the libvlc layout has to be used
+     */
+    private fun computeBounds(): Rect? {
+        val frame = surfaceFrame ?: return null
+        val video = videoSurface ?: return null
+        val videoLp = video.layoutParams ?: return null
 
         val frameWidth = frame.width
         val frameHeight = frame.height
         val videoWidth = videoLp.width
         val videoHeight = videoLp.height
         // The video surface is not explicitly sized (OpenGL vout, PiP): libvlc places everything itself
-        if (frameWidth <= 0 || frameHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) return
+        if (frameWidth <= 0 || frameHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) return null
 
-        // Biggest size fitting in the frame with the video surface aspect ratio
+        // Use the media aspect ratio: the video surface is distorted by the forced ratios (fill, 4:3...)
+        val ar = sourceAspectRatio() ?: videoWidth.toDouble() / videoHeight
+
+        // Biggest size fitting in the frame with the media aspect ratio
         var width = frameWidth
         var height = frameHeight
-        if (videoWidth.toLong() * frameHeight > videoHeight.toLong() * frameWidth)
-            height = ceil(frameWidth.toDouble() * videoHeight / videoWidth).toInt()
+        if (ar * frameHeight > frameWidth)
+            height = ceil(frameWidth / ar).toInt().coerceAtMost(frameHeight)
         else
-            width = ceil(frameHeight.toDouble() * videoWidth / videoHeight).toInt()
+            width = ceil(frameHeight * ar).toInt().coerceAtMost(frameWidth)
 
         // The video already (nearly) has these bounds: just use the libvlc layout
-        if (abs(width - videoWidth) <= videoWidth * TOLERANCE && abs(height - videoHeight) <= videoHeight * TOLERANCE) {
-            if (subtitlesLp !== videoLp) subtitles.layoutParams = videoLp
-            return
-        }
+        if (abs(width - videoWidth) <= videoWidth * TOLERANCE && abs(height - videoHeight) <= videoHeight * TOLERANCE) return null
 
-        // libvlc shares the video layout params instance with the subtitles surface: never modify it
-        if (subtitlesLp !== videoLp && subtitlesLp.width == width && subtitlesLp.height == height) return
-        val gravity = (videoLp as? FrameLayout.LayoutParams)?.gravity?.takeIf { it != FrameLayout.LayoutParams.UNSPECIFIED_GRAVITY }
-                ?: Gravity.CENTER
-        subtitles.layoutParams = FrameLayout.LayoutParams(width, height, gravity)
+        // Stick the subtitles to the bottom of the visible picture instead of the middle of the screen
+        val videoBottom = if (video.height > 0) video.bottom.coerceAtMost(frameHeight) else (frameHeight + height) / 2
+        val top = (videoBottom - height).coerceIn(0, frameHeight - height)
+        val left = (frameWidth - width) / 2
+        return Rect(left, top, left + width, top + height)
+    }
+
+    /**
+     * @return the display aspect ratio of the current video track, or null if unknown
+     */
+    private fun sourceAspectRatio(): Double? {
+        val track = runCatching { videoTrackProvider() }.getOrNull() ?: return null
+        if (track.width <= 0 || track.height <= 0) return null
+        val sar = if (track.sarNum > 0 && track.sarDen > 0) track.sarNum.toDouble() / track.sarDen else 1.0
+        val ar = track.width * sar / track.height
+        // The video is rotated by 90° or 270°
+        return if (track.orientation >= IMedia.VideoTrack.Orientation.LeftTop) 1 / ar else ar
     }
 
     companion object {

@@ -326,7 +326,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     val resizeDelegate: VideoPlayerResizeDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerResizeDelegate(this@VideoPlayerActivity) }
     val orientationDelegate: VideoPlayerOrientationDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerOrientationDelegate(this@VideoPlayerActivity) }
     private val playerKeyListenerDelegate: PlayerKeyListenerDelegate by lazy(LazyThreadSafetyMode.NONE) { PlayerKeyListenerDelegate(this@VideoPlayerActivity) }
-    private val subtitlesDelegate: VideoPlayerSubtitlesDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerSubtitlesDelegate() }
+    private val subtitlesDelegate: VideoPlayerSubtitlesDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerSubtitlesDelegate { service?.mediaplayer?.takeIf { !it.isReleased && it.hasMedia() }?.currentVideoTrack } }
     val tipsDelegate: VideoTipsDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoTipsDelegate(this@VideoPlayerActivity) }
     var isTv: Boolean = false
 
