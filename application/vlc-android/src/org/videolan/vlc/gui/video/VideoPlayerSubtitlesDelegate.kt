@@ -26,6 +26,7 @@ package org.videolan.vlc.gui.video
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.util.VLCVideoLayout
 import org.videolan.vlc.R
 import kotlin.math.abs
@@ -39,10 +40,11 @@ import kotlin.math.ceil
  * and the subtitles are cut along with the picture.
  *
  * This delegate lays out the subtitles surface on its own: it always gets the biggest size that
- * fits in the screen while keeping the video surface aspect ratio (the "best fit" bounds).
- * The subtitles position and size are therefore the same in every scale mode.
+ * fits in the screen while keeping the media aspect ratio (the "best fit" bounds), so the subtitles
+ * are never cut nor distorted. This box is stuck to the bottom of the visible picture, so that the
+ * subtitles do not float in the middle of the screen when the video fills a portrait screen.
  */
-class VideoPlayerSubtitlesDelegate {
+class VideoPlayerSubtitlesDelegate(private val videoTrackProvider: () -> IMedia.VideoTrack?) {
 
     private var surfaceFrame: FrameLayout? = null
     private var videoSurface: View? = null
@@ -102,13 +104,16 @@ class VideoPlayerSubtitlesDelegate {
         // The video surface is not explicitly sized (OpenGL vout, PiP): libvlc places everything itself
         if (frameWidth <= 0 || frameHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) return
 
-        // Biggest size fitting in the frame with the video surface aspect ratio
+        // Use the media aspect ratio: the video surface is distorted by the forced ratios (fill, 4:3...)
+        val ar = sourceAspectRatio() ?: videoWidth.toDouble() / videoHeight
+
+        // Biggest size fitting in the frame with the media aspect ratio
         var width = frameWidth
         var height = frameHeight
-        if (videoWidth.toLong() * frameHeight > videoHeight.toLong() * frameWidth)
-            height = ceil(frameWidth.toDouble() * videoHeight / videoWidth).toInt()
+        if (ar * frameHeight > frameWidth)
+            height = ceil(frameWidth / ar).toInt().coerceAtMost(frameHeight)
         else
-            width = ceil(frameHeight.toDouble() * videoWidth / videoHeight).toInt()
+            width = ceil(frameHeight * ar).toInt().coerceAtMost(frameWidth)
 
         // The video already (nearly) has these bounds: just use the libvlc layout
         if (abs(width - videoWidth) <= videoWidth * TOLERANCE && abs(height - videoHeight) <= videoHeight * TOLERANCE) {
@@ -116,11 +121,26 @@ class VideoPlayerSubtitlesDelegate {
             return
         }
 
+        // Stick the subtitles to the bottom of the visible picture instead of the middle of the screen
+        val videoBottom = if (video.height > 0) video.bottom.coerceAtMost(frameHeight) else (frameHeight + height) / 2
+        val top = (videoBottom - height).coerceIn(0, frameHeight - height)
+
         // libvlc shares the video layout params instance with the subtitles surface: never modify it
-        if (subtitlesLp !== videoLp && subtitlesLp.width == width && subtitlesLp.height == height) return
-        val gravity = (videoLp as? FrameLayout.LayoutParams)?.gravity?.takeIf { it != FrameLayout.LayoutParams.UNSPECIFIED_GRAVITY }
-                ?: Gravity.CENTER
-        subtitles.layoutParams = FrameLayout.LayoutParams(width, height, gravity)
+        if (subtitlesLp !== videoLp && subtitlesLp is FrameLayout.LayoutParams && subtitlesLp.width == width
+                && subtitlesLp.height == height && subtitlesLp.topMargin == top) return
+        subtitles.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = top }
+    }
+
+    /**
+     * @return the display aspect ratio of the current video track, or null if unknown
+     */
+    private fun sourceAspectRatio(): Double? {
+        val track = runCatching { videoTrackProvider() }.getOrNull() ?: return null
+        if (track.width <= 0 || track.height <= 0) return null
+        val sar = if (track.sarNum > 0 && track.sarDen > 0) track.sarNum.toDouble() / track.sarDen else 1.0
+        val ar = track.width * sar / track.height
+        // The video is rotated by 90° or 270°
+        return if (track.orientation >= IMedia.VideoTrack.Orientation.LeftTop) 1 / ar else ar
     }
 
     companion object {
