@@ -18,6 +18,12 @@
             android:key="subtitles_autoload"
             android:title="@string/subtitles_autoload_title"
             app:singleLineTitle="false" />
+    <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="subtitles_keep_on_screen"
+            android:summary="@string/subtitles_keep_on_screen_summary"
+            android:title="@string/subtitles_keep_on_screen_title"
+            app:singleLineTitle="false" />
     <ListPreference
             android:defaultValue=""
             android:entries="@array/subtitles_encoding_list"

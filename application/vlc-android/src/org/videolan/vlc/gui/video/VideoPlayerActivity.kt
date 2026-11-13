@@ -152,6 +152,7 @@ import org.videolan.tools.ENABLE_VOLUME_GESTURE
 import org.videolan.tools.KEY_AUDIO_BOOST
 import org.videolan.tools.KEY_AUDIO_PREFERRED_LANGUAGE
 import org.videolan.tools.KEY_ENABLE_CLONE_MODE
+import org.videolan.tools.KEY_SUBTITLES_KEEP_ON_SCREEN
 import org.videolan.tools.KEY_SUBTITLE_PREFERRED_LANGUAGE
 import org.videolan.tools.KEY_VIDEO_APP_SWITCH
 import org.videolan.tools.KEY_VIDEO_CONFIRM_RESUME
@@ -325,6 +326,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     val resizeDelegate: VideoPlayerResizeDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerResizeDelegate(this@VideoPlayerActivity) }
     val orientationDelegate: VideoPlayerOrientationDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerOrientationDelegate(this@VideoPlayerActivity) }
     private val playerKeyListenerDelegate: PlayerKeyListenerDelegate by lazy(LazyThreadSafetyMode.NONE) { PlayerKeyListenerDelegate(this@VideoPlayerActivity) }
+    private val subtitlesDelegate: VideoPlayerSubtitlesDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoPlayerSubtitlesDelegate() }
     val tipsDelegate: VideoTipsDelegate by lazy(LazyThreadSafetyMode.NONE) { VideoTipsDelegate(this@VideoPlayerActivity) }
     var isTv: Boolean = false
 
@@ -1050,6 +1052,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             val mediaPlayer = mediaplayer
             if (!displayManager.isOnRenderer) videoLayout?.let {
                 mediaPlayer.attachViews(it, displayManager, true, false)
+                if (settings.getBoolean(KEY_SUBTITLES_KEEP_ON_SCREEN, true)) subtitlesDelegate.attach(it)
                 val size = if (isBenchmark) MediaPlayer.ScaleType.SURFACE_FILL else MediaPlayer.ScaleType.entries[settings.getInt(VIDEO_RATIO, MediaPlayer.ScaleType.SURFACE_BEST_FIT.ordinal)]
                 mediaPlayer.videoScale = size
             }
@@ -1104,6 +1107,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
                 if (switchToPopup)
                     switchToPopup(currentMediaPosition)
                 else {
+                    subtitlesDelegate.detach()
                     mediaplayer.detachViews()
                     currentMediaWrapper?.addFlags(MediaWrapper.MEDIA_FORCE_AUDIO)
                     showWithoutParse(currentMediaPosition)
@@ -1183,6 +1187,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         /* Stop listening for changes to media routes. */
         if (!isBenchmark) displayManager.removeMediaRouterCallback()
 
+        subtitlesDelegate.detach()
         if (!displayManager.isSecondary) service?.mediaplayer?.detachViews()
     }
 
